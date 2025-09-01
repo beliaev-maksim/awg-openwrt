@@ -1,0 +1,68 @@
+name: Build AmneziaWG for OpenWrt 22.03.4 (ramips/mt76x8)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout OpenWrt source
+        uses: actions/checkout@v4
+        with:
+          repository: openwrt/openwrt
+          ref: v22.03.4
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+            python3-distutils rsync unzip zlib1g-dev file wget
+
+      - name: Configure feeds
+        run: |
+          cp feeds.conf.default feeds.conf
+          echo "src-git awgopenwrt https://github.com/Slava-Shchipunov/awg-openwrt.git" >> feeds.conf
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build for ramips/mt76x8
+        run: |
+          wget https://downloads.openwrt.org/releases/22.03.4/targets/ramips/mt76x8/config.buildinfo -O .config
+          echo "CONFIG_PACKAGE_kmod-amneziawg=m" >> .config
+          echo "CONFIG_PACKAGE_amneziawg-tools=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-amneziawg=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=m" >> .config
+          echo "CONFIG_PACKAGE_kmod-crypto-lib-curve25519=m" >> .config
+          make defconfig
+
+      - name: Build toolchain and kernel
+        run: |
+          make tools/install -i -j$(nproc)
+          make toolchain/install -i -j$(nproc)
+          make target/linux/compile V=s -i -j$(nproc)
+
+          echo "Expected vermagic: 5.10.176-1-a90af1d1eca8a5093db982a2a36fb9bc"
+          cat ./build_dir/target-*/linux-*/linux-*/.vermagic
+
+      - name: Build AmneziaWG packages
+        run: |
+          make package/kmod-amneziawg/{clean,download,prepare,compile} V=s
+          make package/amneziawg-tools/{clean,download,prepare,compile} V=s
+          make package/luci-app-amneziawg/{clean,download,prepare,compile} V=s
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p awgrelease
+          cp bin/packages/mipsel_24kc/awgopenwrt/amneziawg-tools_*.ipk awgrelease/ || true
+          cp bin/packages/mipsel_24kc/awgopenwrt/luci-app-amneziawg_*.ipk awgrelease/ || true
+          cp bin/targets/ramips/mt76x8/packages/kmod-amneziawg_*.ipk awgrelease/ || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: amneziawg-openwrt-22.03.4-ramips-mt76x8
+          path: awgrelease/*
